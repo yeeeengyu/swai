@@ -1,0 +1,4 @@
+*.wav
+발표/*
+vosk/*
+vosk_env/*

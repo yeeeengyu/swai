@@ -1,0 +1,18 @@
+[project]
+name = "swai"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.121.1",
+    "gtts>=2.5.4",
+    "openai-whisper>=20250625",
+    "python-multipart>=0.0.20",
+    "sounddevice>=0.5.3",
+    "speechrecognition>=3.14.3",
+    "streamlit>=1.51.0",
+    "torch>=2.9.0",
+    "uvicorn[standard]>=0.38.0",
+    "wavio>=0.0.9",
+]

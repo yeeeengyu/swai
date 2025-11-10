@@ -2,3 +2,5 @@
 발표/*
 vosk/*
 vosk_env/*
+.venv/*
+__pycache__/*

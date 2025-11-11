@@ -34,7 +34,6 @@ async def stt(file: UploadFile = File(...)):
     try:
         model = get_whisper_model()
     except RuntimeError as e:
-        # Return a clear HTTP error instead of crashing the server import
         raise HTTPException(status_code=500, detail=str(e))
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -50,7 +49,6 @@ async def stt(file: UploadFile = File(...)):
             pass
 
     return JSONResponse({"text": result["text"]})
-
 
 @app.post("/tts")
 async def tts(text: str):

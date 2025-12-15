@@ -1,32 +1,76 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
-import speech_recognition as sr
-from gtts import gTTS
-import tempfile
-import os
+from utils.getwhisper import get_whisper_model
+import tempfile, os, json
 import torch
+import soundfile as sf
+from vits.models import SynthesizerTrn
+from vits.text import text_to_sequence
 
 app = FastAPI()
+_VITS = {
+    "model": None,
+    "hps": None,
+    "device": None,
+}
 
-# Lazily load Whisper model on first request to avoid import-time errors on Windows
-def get_whisper_model():
-    # cache model on the app state to avoid reloading
-    if getattr(app.state, "whisper_model", None) is not None:
-        return app.state.whisper_model
+def _dict_to_ns(d):
+    from types import SimpleNamespace
+    if isinstance(d, dict):
+        return SimpleNamespace(**{k: _dict_to_ns(v) for k, v in d.items()})
+    if isinstance(d, list):
+        return [_dict_to_ns(x) for x in d]
+    return d
 
-    try:
-        import whisper
-    except Exception as e:
-        # Import failed (e.g. whisper tries to load libc on Windows). Raise to be handled by route.
-        raise RuntimeError(f"Failed to import whisper: {e}") from e
+def get_vits():
+    if _VITS["model"] is not None:
+        return _VITS["model"], _VITS["hps"], _VITS["device"]
 
-    try:
-        model = whisper.load_model("small")
-    except Exception as e:
-        raise RuntimeError(f"Failed to load whisper model: {e}") from e
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    CONFIG_PATH = "vits/configs/config.json"
+    CKPT_PATH   = "vits/checkpoints/G_100000.pth"
 
-    app.state.whisper_model = model
-    return model
+    if not os.path.exists(CONFIG_PATH):
+        raise RuntimeError(f"config not found: {CONFIG_PATH}")
+    if not os.path.exists(CKPT_PATH):
+        raise RuntimeError(f"checkpoint not found: {CKPT_PATH}")
+
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        hps = _dict_to_ns(json.load(f))
+    model = SynthesizerTrn(
+        hps.data.n_symbols,
+        hps.data.filter_length // 2 + 1,
+        hps.train.segment_size // hps.data.hop_length,
+        n_speakers=getattr(hps.data, "n_speakers", 0),
+        **hps.model.__dict__,
+    ).to(device)
+
+    ckpt = torch.load(CKPT_PATH, map_location=device)
+    state_dict = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+    model.load_state_dict(state_dict, strict=False)
+    model.eval()
+
+    _VITS["model"] = model
+    _VITS["hps"] = hps
+    _VITS["device"] = device
+    return model, hps, device
+
+
+def synthesize_vits(model, hps, device, text: str):
+    seq = text_to_sequence(text, getattr(hps.data, "text_cleaners", ["korean_cleaners"]))
+    x = torch.LongTensor(seq).unsqueeze(0).to(device)
+    x_lens = torch.LongTensor([x.size(1)]).to(device)
+
+    with torch.no_grad():
+        y = model.infer(
+            x,
+            x_lens,
+            noise_scale=0.667,
+            noise_scale_w=0.8,
+            length_scale=1.0,
+        )[0][0, 0]
+    sr = hps.data.sampling_rate
+    return y, sr
 
 
 @app.post("/stt")
@@ -41,7 +85,7 @@ async def stt(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        result = model.transcribe(tmp_path, language='ko')
+        result = model.transcribe(tmp_path, language="ko")
     finally:
         try:
             os.remove(tmp_path)
@@ -50,9 +94,33 @@ async def stt(file: UploadFile = File(...)):
 
     return JSONResponse({"text": result["text"]})
 
+
+def _cleanup_file(path: str):
+    try:
+        os.remove(path)
+    except Exception:
+        pass
+
+
 @app.post("/tts")
-async def tts(text: str):
-    tts = gTTS(text=text, lang='ko')
-    tmp_path = tempfile.mktemp(suffix=".mp3")
-    tts.save(tmp_path)
-    return FileResponse(tmp_path, media_type="audio/mpeg", filename="tts.mp3")
+async def tts(text: str, background: BackgroundTasks):
+    try:
+        vits_model, hps, device = get_vits()
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=f"VITS load error: {e}")
+
+    try:
+        audio, sr = synthesize_vits(vits_model, hps, device, text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"VITS synth error: {e}")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        tmp_path = tmp.name
+        sf.write(tmp_path, audio.detach().cpu().numpy(), sr)
+    background.add_task(_cleanup_file, tmp_path)
+
+    return FileResponse(
+        tmp_path,
+        media_type="audio/wav",
+        filename="tts.wav",
+    )

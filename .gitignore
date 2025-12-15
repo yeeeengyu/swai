@@ -3,4 +3,10 @@
 vosk/*
 vosk_env/*
 .venv/*
-__pycache__/*
+__pycache__/
+vits_pretrained/*
+vits/
+.wav
+.venv
+dataset/
+*.tsv

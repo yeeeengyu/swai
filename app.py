@@ -6,7 +6,7 @@ import wavio
 import io
 
 st.title("청각장애인을 위한 STT/TTS 실시간 대화 지원")
-st.header("말하기 → 문자 → 음성")
+st.header("aa")
 
 duration = st.slider("녹음 시간(초)", 1, 10, 3)
 if st.button("말하기 시작"):

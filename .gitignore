@@ -5,8 +5,8 @@ vosk_env/*
 .venv/*
 __pycache__/
 vits_pretrained/*
-vits/
+vits/*
 .wav
 .venv
-dataset/
+dataset/*
 *.tsv

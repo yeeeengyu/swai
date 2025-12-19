@@ -1,11 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from utils.getwhisper import get_whisper_model
+from transformers import VitsModel, AutoTokenizer
+from utils.schemas import TTSReq
 import tempfile, os, json
 import torch
 import soundfile as sf
-from vits.models import SynthesizerTrn
-from vits.text import text_to_sequence
 
 app = FastAPI()
 _VITS = {

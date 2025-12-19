@@ -1,53 +1,97 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi.responses import FileResponse, JSONResponse
 import os, tempfile
-import torch
-from TTS.api import TTS
-
-app = FastAPI()
-
-MODEL_PATH  = os.getenv("TTS_MODEL_PATH",  r"C:\Users\pc\Desktop\최인규\건들면사망\swai\vits_pretrained\best_model.pth")
-CONFIG_PATH = os.getenv("TTS_CONFIG_PATH", r"C:\Users\pc\Desktop\최인규\건들면사망\swai\vits_pretrained\config.json")
+import torch, soundfile as sf
+from contextlib import asynccontextmanager
+from transformers import VitsModel, AutoTokenizer
+from utils.schemas import TTSReq
+from utils.clean import cleanup
+from utils.getwhisper import get_whisper_model
+import whisper
 
 _tts = None
+_whisper_model = None
 
-def get_tts():
-    global _tts
-    if _tts is not None:
-        return _tts
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = None
+tok = None
 
-    if not os.path.exists(MODEL_PATH):
-        raise RuntimeError(f"model not found: {MODEL_PATH}")
-    if not os.path.exists(CONFIG_PATH):
-        raise RuntimeError(f"config not found: {CONFIG_PATH}")
+@asynccontextmanager
+async def warmup(app: FastAPI):
+    global model, tok
+    tok = AutoTokenizer.from_pretrained("facebook/mms-tts-kor")
+    model = VitsModel.from_pretrained("facebook/mms-tts-kor").to(device).eval()
+    yield
 
-    _tts = TTS(model_path=MODEL_PATH, config_path=CONFIG_PATH, gpu=torch.cuda.is_available())
-    return _tts
+app = FastAPI(lifespan=warmup)
 
-def cleanup(path: str):
-    try: os.remove(path)
-    except: pass
-
-@app.on_event("startup")
-def warmup():
-    # 서버 시작 시 모델 미리 로드 (첫 요청 지연 제거)
-    get_tts()
+from fastapi import Query, HTTPException
+from fastapi.responses import FileResponse
+import os, tempfile, uuid
+import numpy as np
+import soundfile as sf
+import torch
+try:
+    from uroman import Uroman
+    _uroman = Uroman()
+    def romanize_ko(s: str) -> str:
+        return _uroman.romanize_string(s)
+except Exception:
+    _uroman = None
+    def romanize_ko(s: str) -> str:
+        return s
+from fastapi import Query, HTTPException
+from fastapi.responses import Response
+import io
+import numpy as np
+import soundfile as sf
+import torch
 
 @app.post("/tts")
-def tts(text: str, background: BackgroundTasks):
+def tts(text: str = Query(...)):
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="text is empty")
+
+    text = romanize_ko(text)
+
+    inputs = tok(text, return_tensors="pt")
+    if inputs["input_ids"].shape[1] == 0:
+        raise HTTPException(status_code=422, detail="text produced no tokens")
+
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        out = model(**inputs)
+
+    audio = out.waveform.detach().cpu().numpy().squeeze()
+    if audio.size < 100:
+        raise HTTPException(status_code=500, detail="generated audio too short")
+
+    audio = np.asarray(audio, dtype=np.float32)
+
+    buf = io.BytesIO()
+    sf.write(buf, audio, 22050, format="WAV", subtype="PCM_16")
+    return Response(content=buf.getvalue(), media_type="audio/wav")
+
+
+@app.post("/stt")
+async def stt(file: UploadFile = File(...)):
     try:
-        tts = get_tts()
-    except Exception as e:
+        stt_model = get_whisper_model()
+    except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    fd, out_path = tempfile.mkstemp(suffix=".wav")
-    os.close(fd)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
 
     try:
-        tts.tts_to_file(text=text, file_path=out_path)
-    except Exception as e:
-        cleanup(out_path)
-        raise HTTPException(status_code=500, detail=f"synthesis failed: {e}")
+        result = stt_model.transcribe(tmp_path, language="ko")
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
 
-    background.add_task(cleanup, out_path)
-    return FileResponse(out_path, media_type="audio/wav", filename="tts.wav")
+    return JSONResponse({"text": result.get("text", "")})

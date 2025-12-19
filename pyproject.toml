@@ -14,6 +14,7 @@ dependencies = [
     "speechrecognition>=3.14.3",
     "streamlit>=1.51.0",
     "torch>=2.9.0",
+    "uroman>=1.3.1.1",
     "uvicorn[standard]>=0.38.0",
     "wavio>=0.0.9",
 ]

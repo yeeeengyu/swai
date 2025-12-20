@@ -6,7 +6,7 @@ import wavio
 import io
 
 st.title("청각장애인을 위한 STT/TTS 실시간 대화 지원")
-st.header("aa")
+st.header("음성 → 텍스트 ( STT )")
 
 duration = st.slider("녹음 시간(초)", 1, 10, 3)
 if st.button("말하기 시작"):
@@ -33,15 +33,14 @@ if st.button("말하기 시작"):
 
         st.write(tts_res.status_code, tts_res.headers.get("content-type"), len(tts_res.content))
 
-        if tts_res.status_code != 200:
+        if tts_res.status_code == 422:
+            st.error("음성 입력이 되지 않았습니다. 다시 녹음해주세요!", tts_res.text)
+        elif tts_res.status_code != 200:
             st.error(tts_res.text)
         else:
             st.audio(tts_res.content, format="audio/wav")
 
-
-        audio_data = io.BytesIO(tts_res.content)
-        st.audio(audio_data, format="audio/wav")
-st.header("텍스트 → 음성 (TTS만 사용)")
+st.header("텍스트 → 음성 ( TTS )")
 
 manual_text = st.text_area("읽어 줄 문장을 입력하세요.", height=120)
 
@@ -50,13 +49,7 @@ if st.button("입력한 문장 읽어주기"):
         st.warning("문장을 입력해주세요.")
     else:
         tts_res = requests.post("http://localhost:8000/tts", params=[("text", manual_text.strip())])
-
         st.write(tts_res.status_code, tts_res.headers.get("content-type"), len(tts_res.content))
-
-        if tts_res.status_code != 200:
-            st.error(tts_res.text)
-        else:
-            st.audio(tts_res.content, format="audio/wav")
 
         if tts_res.status_code != 200:
             st.error(f"TTS 요청 실패: {tts_res.text}")
